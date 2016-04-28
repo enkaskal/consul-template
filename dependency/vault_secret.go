@@ -5,6 +5,9 @@ import (
 	"log"
 	"sync"
 	"time"
+	"strings"
+
+	vaultapi "github.com/hashicorp/vault/api"
 )
 
 // Secret is a vault secret.
@@ -23,6 +26,7 @@ type VaultSecret struct {
 	sync.Mutex
 
 	Path   string
+	data   map[string]interface{}
 	secret *Secret
 
 	stopped bool
@@ -88,14 +92,21 @@ func (d *VaultSecret) Fetch(clients *ClientSet, opts *QueryOptions) (interface{}
 		}
 
 		// The renewal failed for some reason.
-		log.Printf("[WARN] (%s) failed to renew, re-reading: %s", d.Display(), err)
+		log.Printf("[WARN] (%s) failed to renew, obtaining new: %s", d.Display(), err)
 	}
 
 	// If we got this far, we either didn't have a secret to renew, the secret was
-	// not renewable, or the renewal failed, so attempt a fresh read.
-	vaultSecret, err := vault.Logical().Read(d.Path)
+	// not renewable, or the renewal failed, so attempt to obtain a fresh secret
+	var vaultSecret *vaultapi.Secret = nil
+	if 0 != len(d.data) {
+		log.Printf("[DEBUG] d.data found using vault.Write")
+		vaultSecret, err = vault.Logical().Write(d.Path, d.data)
+	} else {
+		log.Printf("[DEBUG] d.data not found using vault.Read")
+		vaultSecret, err = vault.Logical().Read(d.Path)
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("error reading from vault: %s", err)
+		return nil, nil, fmt.Errorf("error obtaining secret from vault: %s", err)
 	}
 
 	// The secret could be nil (maybe it does not exist yet). This is not an error
@@ -151,8 +162,18 @@ func (d *VaultSecret) Stop() {
 
 // ParseVaultSecret creates a new datacenter dependency.
 func ParseVaultSecret(s string) (*VaultSecret, error) {
+
+	fields := strings.Fields(s)
+	d := make(map[string]interface{})
+	for i,field := range fields {
+		if 0 == i { continue }
+		kv := strings.Split(field, "=")
+		d[kv[0]] = kv[1]
+	}
+
 	vs := &VaultSecret{
-		Path:   s,
+		Path:   fields[0],
+		data:   d,
 		stopCh: make(chan struct{}),
 	}
 	return vs, nil
